@@ -1,0 +1,144 @@
+import express from "express";
+import path from "path";
+const rooms = /* @__PURE__ */ new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, room] of rooms.entries()) {
+    if (now - room.lastActive > 30 * 60 * 1e3) {
+      rooms.delete(id);
+    }
+  }
+}, 60 * 1e3);
+function getOrCreateRoom(roomId) {
+  let room = rooms.get(roomId);
+  if (!room) {
+    room = {
+      roomId,
+      createdAt: Date.now(),
+      lastActive: Date.now(),
+      cameraActive: false,
+      controllerActive: false,
+      cameraLastSeen: 0,
+      controllerLastSeen: 0,
+      messages: []
+    };
+    rooms.set(roomId, room);
+  }
+  return room;
+}
+async function startServer() {
+  const app = express();
+  app.use(express.json({ limit: "10mb" }));
+  app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.header("Access-Control-Allow-Headers", "Content-Type");
+    if (req.method === "OPTIONS") {
+      res.sendStatus(204);
+      return;
+    }
+    next();
+  });
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok", time: Date.now() });
+  });
+  app.post("/api/signal/rooms/:roomId/join", (req, res) => {
+    const roomId = req.params.roomId.toUpperCase();
+    const { role } = req.body;
+    const room = getOrCreateRoom(roomId);
+    room.lastActive = Date.now();
+    if (role === "camera") {
+      room.cameraActive = true;
+      room.cameraLastSeen = Date.now();
+    } else if (role === "controller") {
+      room.controllerActive = true;
+      room.controllerLastSeen = Date.now();
+    }
+    const now = Date.now();
+    res.json({
+      success: true,
+      roomId,
+      cameraActive: room.cameraActive && now - room.cameraLastSeen < 15e3,
+      controllerActive: room.controllerActive && now - room.controllerLastSeen < 15e3
+    });
+  });
+  app.post("/api/signal/rooms/:roomId/message", (req, res) => {
+    const roomId = req.params.roomId.toUpperCase();
+    const { fromRole, toRole, type, payload } = req.body;
+    const room = getOrCreateRoom(roomId);
+    room.lastActive = Date.now();
+    const msg = {
+      id: Math.random().toString(36).substring(2, 9),
+      timestamp: Date.now(),
+      fromRole,
+      toRole: toRole || "all",
+      type,
+      payload
+    };
+    if (fromRole === "camera") room.cameraLastSeen = Date.now();
+    if (fromRole === "controller") room.controllerLastSeen = Date.now();
+    room.messages.push(msg);
+    if (room.messages.length > 100) {
+      room.messages = room.messages.slice(-100);
+    }
+    res.json({ success: true, messageId: msg.id });
+  });
+  app.get("/api/signal/rooms/:roomId/messages", (req, res) => {
+    const roomId = req.params.roomId.toUpperCase();
+    const role = req.query.role;
+    const since = parseInt(req.query.since || "0", 10);
+    const room = getOrCreateRoom(roomId);
+    const now = Date.now();
+    if (role === "camera") room.cameraLastSeen = now;
+    if (role === "controller") room.controllerLastSeen = now;
+    const filtered = room.messages.filter(
+      (m) => m.timestamp > since && (m.toRole === role || m.toRole === "all") && m.fromRole !== role
+    );
+    res.json({
+      messages: filtered,
+      now,
+      cameraActive: room.cameraActive && now - room.cameraLastSeen < 15e3,
+      controllerActive: room.controllerActive && now - room.controllerLastSeen < 15e3
+    });
+  });
+  app.get("/api/signal/rooms/:roomId/status", (req, res) => {
+    const roomId = req.params.roomId.toUpperCase();
+    const room = getOrCreateRoom(roomId);
+    const now = Date.now();
+    res.json({
+      roomId,
+      cameraActive: room.cameraActive && now - room.cameraLastSeen < 15e3,
+      controllerActive: room.controllerActive && now - room.controllerLastSeen < 15e3
+    });
+  });
+  app.post("/api/signal/rooms/:roomId/reset", (req, res) => {
+    const roomId = req.params.roomId.toUpperCase();
+    const room = getOrCreateRoom(roomId);
+    room.messages = [];
+    res.json({ success: true });
+  });
+  const isProduction = process.env.NODE_ENV === "production";
+  const currentDir = import.meta.dirname || process.cwd();
+  if (!isProduction) {
+    const { createServer: createViteServer } = await import("vite");
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa"
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.resolve(currentDir, "dist");
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => {
+      res.sendFile(path.resolve(distPath, "index.html"));
+    });
+  }
+  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3e3;
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`TeleLens server running on http://0.0.0.0:${PORT} (${isProduction ? "production" : "development"})`);
+  });
+}
+startServer().catch((err) => {
+  console.error("Failed to start server:", err);
+  process.exit(1);
+});

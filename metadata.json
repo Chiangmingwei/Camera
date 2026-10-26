@@ -1,0 +1,6 @@
+{
+  "name": "TeleLens Remote Camera",
+  "description": "Turn one phone into a remote camera and a second phone into a live viewfinder remote controller with P2P WebRTC streaming and pro controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
